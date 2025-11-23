@@ -3,6 +3,10 @@ import torch
 import argparse
 from torch.backends import cudnn
 from models.MRDNet import build_net, MRDNet
+try:
+    from models.full_model import FullModel
+except ImportError:
+    FullModel = None
 from train import _train
 from eval import _eval
 
@@ -12,7 +16,7 @@ def main(args):
     cudnn.benchmark = True
 
     if not os.path.exists('results/'):
-        os.makedirs(args.model_save_dir)
+        os.makedirs('results/')
     if not os.path.exists('results/' + args.model_name + '/'):
         os.makedirs('results/' + args.model_name + '/')
     if not os.path.exists(args.model_save_dir):
@@ -20,11 +24,15 @@ def main(args):
     if not os.path.exists(args.result_dir):
         os.makedirs(args.result_dir)
 
-    # Instantiate model; allow optional DFD activation via command-line flag (MRDNet only)
-    if getattr(args, 'use_dfd', False) and args.model_name == 'MRDNet':
-        model = MRDNet(use_dfd=True)
+    # Instantiate model or joint wrapper
+    if getattr(args, 'use_dbrs', False) and FullModel is not None and args.model_name == 'MRDNet':
+        model = FullModel(use_dbrs=True, use_dfd=getattr(args, 'use_dfd', False))
     else:
-        model = build_net(args.model_name)
+        # Allow optional DFD activation via command-line flag (MRDNet only)
+        if getattr(args, 'use_dfd', False) and args.model_name == 'MRDNet':
+            model = MRDNet(use_dfd=True)
+        else:
+            model = build_net(args.model_name)
     # Multi-GPU support: only wrap with DataParallel during training.
     if torch.cuda.is_available():
         if args.mode == 'train' and torch.cuda.device_count() > 1:
@@ -44,8 +52,6 @@ if __name__ == '__main__':
     # Directories
     parser.add_argument('--model_name', default='MRDNet', choices=['MRDNet', 'MRDNetPlus'], type=str)
     parser.add_argument('--data_dir', type=str, default='/kaggle/input/go-pro/GOPRO')
-    parser.add_argument('--mode', default='train', choices=['train', 'test'], type=str)
-
     # Train
     parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--learning_rate', type=float, default=1e-4)
@@ -61,6 +67,12 @@ if __name__ == '__main__':
     parser.add_argument('--lr_steps', type=list, default=[(x+1) * 500 for x in range(3000//500)])
     parser.add_argument('--train_proportion', type=float, default=1.0, help='Proportion of training data to use (0-1]')
     parser.add_argument('--use_dfd', action='store_true', help='Enable Dynamic Frequency Decomposition (DFD) modules')
+    parser.add_argument('--use_dbrs', action='store_true', help='Enable Diffusion-Based Refinement Stage (joint training wrapper)')
+    parser.add_argument('--refine_loss_weight', type=float, default=0.5, help='Weight for refinement loss term when DBRS enabled')
+    parser.add_argument('--freeze_mrd_epochs', type=int, default=0, help='Epochs to freeze MRDNet before joint fine-tune (0=disabled)')
+    parser.add_argument('--mrd_lr_scale', type=float, default=0.2, help='LR scale applied to MRDNet params after unfreeze')
+    parser.add_argument('--freeze_scope', type=str, default='encoder', choices=['encoder','all','none'], help='Which MRDNet parts to freeze initially')
+    parser.add_argument('--accum_steps', type=int, default=1, help='Gradient accumulation steps')
     parser.add_argument('--checkpoint_dir', type=str, default='', help='Directory to save checkpoints; overrides default results/<model_name>/weights')
     parser.add_argument('--crop_size', type=int, default=256, help='Training crop size. Set 0 to disable cropping and use full images')
     parser.add_argument('--use_amp', type=bool, default=True, help='Use mixed precision (AMP) to save memory')
@@ -75,7 +87,6 @@ if __name__ == '__main__':
     if args.checkpoint_dir:
         args.model_save_dir = args.checkpoint_dir
     args.result_dir = os.path.join('results/', args.model_name, 'result_image/')
-
     # Ensure directories exist
     if not os.path.exists(args.model_save_dir):
         os.makedirs(args.model_save_dir, exist_ok=True)

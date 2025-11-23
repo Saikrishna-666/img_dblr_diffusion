@@ -8,13 +8,81 @@ from torch.utils.tensorboard import SummaryWriter
 from valid import _valid
 import torch.nn.functional as F
 
+"""Joint training utilities: phased freezing and refinement loss integration.
+Adds support for training a wrapper model returning (mrd_outs, refined).
+"""
+
+def _get_root(model):
+    return model.module if hasattr(model, 'module') else model
+
+def _select_submodules_for_freeze(root, scope: str):
+    if scope == 'none':
+        return []
+    if scope == 'all':
+        return [root]
+    names = ['mrd', 'mrd.Encoder', 'mrd.en_layer1', 'mrd.en_layer2', 'mrd.BA', 'mrd.AFFs', 'mrd.FAM1', 'mrd.FAM2', 'mrd.SCM1', 'mrd.SCM2']
+    modules = []
+    for n in names:
+        # support nested attribute paths
+        cur = root
+        ok = True
+        for part in n.split('.'):
+            if not hasattr(cur, part):
+                ok = False
+                break
+            cur = getattr(cur, part)
+        if ok and hasattr(cur, 'parameters'):
+            modules.append(cur)
+    # de-duplicate
+    return list(dict.fromkeys(modules))
+
+def freeze_parts(root, scope):
+    frozen_params = 0
+    for m in _select_submodules_for_freeze(root, scope):
+        for p in m.parameters():
+            p.requires_grad = False
+            frozen_params += 1
+    print(f"[Freeze] {frozen_params} parameters frozen (scope={scope}).")
+    return frozen_params
+
+def unfreeze_parts(root, scope):
+    unfrozen = []
+    for m in _select_submodules_for_freeze(root, scope):
+        for p in m.parameters():
+            if not p.requires_grad:
+                p.requires_grad = True
+                unfrozen.append(p)
+    print(f"[Unfreeze] {len(unfrozen)} parameters unfrozen (scope={scope}).")
+    return unfrozen
+
 
 def _train(model, args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     criterion = torch.nn.L1Loss()  # 构造L1损失函数
-    optimizer = torch.optim.Adam(model.parameters(),
-                                 lr=args.learning_rate,
-                                 weight_decay=args.weight_decay)
+    root = _get_root(model)
+
+    # Config for phased freezing
+    freeze_epochs = int(getattr(args, 'freeze_mrd_epochs', 0))
+    freeze_scope = str(getattr(args, 'freeze_scope', 'none'))
+    mrd_lr_scale = float(getattr(args, 'mrd_lr_scale', 0.2))
+    # Support both legacy 'refine_loss_weight' and new 'refine_weight' arg names
+    refine_weight = float(getattr(args, 'refine_weight', getattr(args, 'refine_loss_weight', 0.5)))
+    joint_mode = hasattr(root, 'mrd') and hasattr(root, 'dbrs') and getattr(args, 'use_dbrs', False)
+
+    if freeze_epochs > 0 and freeze_scope != 'none':
+        freeze_parts(root, freeze_scope)
+
+    # Build param groups
+    param_groups = []
+    # MRDNet params
+    mrd_params = list(root.mrd.parameters()) if hasattr(root, 'mrd') else list(root.parameters())
+    mrd_initial_lr = 0.0 if (freeze_epochs > 0 and freeze_scope != 'none') else args.learning_rate * mrd_lr_scale
+    param_groups.append({'params': [p for p in mrd_params if p.requires_grad], 'lr': mrd_initial_lr, 'name': 'mrd'})
+    # Refinement params
+    if joint_mode and root.dbrs is not None:
+        param_groups.append({'params': [p for p in root.dbrs.parameters() if p.requires_grad], 'lr': args.learning_rate, 'name': 'dbrs'})
+
+    optimizer = torch.optim.Adam(param_groups, lr=args.learning_rate, weight_decay=args.weight_decay)
 
     dataloader = train_dataloader(
         args.data_dir,
@@ -31,7 +99,7 @@ def _train(model, args):
         train_len = sum(1 for _ in dataloader)
     print(f"Training samples: {train_len}")
     # print("dataloader=", dataloader)  # <torch.utils.data.dataloader.DataLoader object at 0x0000023BE5971AF0>
-    max_iter = len(dataloader)  # 最大迭代次数是数据的长度,因为每次迭代四次
+    max_iter = len(dataloader)  # 最大迭代次数
     # print("len(dataloader)=", max_iter)  # len(dataloader)= 526
     # 按需调整学习率，lr_steps是一个递增的list，gamma是学习率调整倍数，默认为0.1倍，这里根据参数设置为0.5，即下降50倍
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, args.lr_steps, args.gamma)
@@ -114,6 +182,13 @@ def _train(model, args):
 
     for epoch_idx in range(epoch, args.num_epoch + 1):
 
+        # Unfreeze transition
+        if freeze_epochs > 0 and epoch_idx == freeze_epochs + 1 and freeze_scope != 'none':
+            newly = unfreeze_parts(root, freeze_scope)
+            if newly:
+                optimizer.add_param_group({'params': newly, 'lr': args.learning_rate * mrd_lr_scale, 'name': 'mrd_unfrozen'})
+                print(f"[LR] Added unfrozen MRDNet group with lr={args.learning_rate * mrd_lr_scale:.6f}")
+
         epoch_timer.tic()
         iter_timer.tic()
         progress = tqdm(dataloader, desc=f"Epoch {epoch_idx}", leave=False)
@@ -128,13 +203,21 @@ def _train(model, args):
 
             # Accumulated mixed precision forward
             with torch.amp.autocast('cuda', enabled=use_amp):
-                pred_img = model(input_img)  # 将张量输入模型
-                label_img2 = F.interpolate(label_img, scale_factor=0.5, mode='bilinear')  # 下采样
-                label_img4 = F.interpolate(label_img, scale_factor=0.25, mode='bilinear')  # 下采样四倍
-                l1 = criterion(pred_img[0], label_img4)  # 计算损失函数
-                l2 = criterion(pred_img[1], label_img2)
-                l3 = criterion(pred_img[2], label_img)
-                loss_content = l1 + l2 + l3  # 损失函数
+                forward_out = model(input_img)
+                if joint_mode and isinstance(forward_out, tuple):
+                    mrd_outs, refined = forward_out
+                else:
+                    mrd_outs = forward_out
+                    refined = mrd_outs[-1]  # fallback
+                label_img2 = F.interpolate(label_img, scale_factor=0.5, mode='bilinear')
+                label_img4 = F.interpolate(label_img, scale_factor=0.25, mode='bilinear')
+                l1 = criterion(mrd_outs[0], label_img4)
+                l2 = criterion(mrd_outs[1], label_img2)
+                l3 = criterion(mrd_outs[2], label_img)
+                loss_content = l1 + l2 + l3
+                if joint_mode:
+                    l_refine = criterion(refined, label_img)
+                    loss_content = loss_content + refine_weight * l_refine
 
             # Replace deprecated torch.rfft with torch.fft.fftn and convert complex to real-imag view
             # Keep full spectrum (onesided=False equivalent) over last 2 dims (H, W), no normalization (default)
@@ -145,16 +228,18 @@ def _train(model, args):
                 return torch.view_as_real(c)
 
             label_fft1 = fft2_as_real(label_img4)
-            pred_fft1 = fft2_as_real(pred_img[0])
+            pred_fft1 = fft2_as_real(mrd_outs[0])
             label_fft2 = fft2_as_real(label_img2)
-            pred_fft2 = fft2_as_real(pred_img[1])
+            pred_fft2 = fft2_as_real(mrd_outs[1])
             label_fft3 = fft2_as_real(label_img)
-            pred_fft3 = fft2_as_real(pred_img[2])
+            pred_fft3 = fft2_as_real(mrd_outs[2])
+            if joint_mode:
+                refined_fft = fft2_as_real(refined)
 
             f1 = criterion(pred_fft1, label_fft1)  # 经过傅里叶变换之后的Loss损失
             f2 = criterion(pred_fft2, label_fft2)
             f3 = criterion(pred_fft3, label_fft3)
-            loss_fft = f1 + f2 + f3
+            loss_fft = f1 + f2 + f3 + (criterion(refined_fft, label_fft3) if joint_mode else 0)
 
             with torch.amp.autocast('cuda', enabled=use_amp):
                 loss = loss_content + 0.1 * loss_fft  # 总的loss损失,原来是0.1倍的loss_fft
@@ -182,9 +267,11 @@ def _train(model, args):
             # print("'iter_idx + 1'=", iter_idx + 1)
 
             # Update tqdm status bar
+            lr_groups = {g.get('name', i): g['lr'] for i, g in enumerate(optimizer.param_groups)}
             progress.set_postfix({
                 'pix': f"{iter_pixel_adder.average():.4f}",
-                'fft': f"{iter_fft_adder.average():.4f}"
+                'fft': f"{iter_fft_adder.average():.4f}",
+                'lr_mrd': f"{lr_groups.get('mrd', 0):.1e}"
             })
 
             if (iter_idx + 1) % args.print_freq == 0:  # 每100次迭代保存一次临时的model，显示一次
