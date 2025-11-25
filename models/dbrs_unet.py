@@ -41,6 +41,7 @@ class DBRSUNet(nn.Module):
         self.enc2 = ConvBlock(base_channels, base_channels*2)
         self.enc3 = ConvBlock(base_channels*2, base_channels*2)
         self.res_blocks = nn.Sequential(*[ResidualBlock(base_channels*2) for _ in range(4)])
+        self.skip2 = nn.Conv2d(base_channels*2, base_channels, kernel_size=1)
         self.dec2 = ConvBlock(base_channels*2, base_channels)
         self.dec1 = ConvBlock(base_channels, base_channels)
         self.out = nn.Conv2d(base_channels, in_channels, 3, padding=1)
@@ -63,7 +64,7 @@ class DBRSUNet(nn.Module):
         e2 = self.enc2(F.avg_pool2d(e1, 2))
         e3 = self.enc3(F.avg_pool2d(e2, 2))
         mid = self.res_blocks(e3)
-        d2 = self.dec2(F.interpolate(mid, scale_factor=2, mode='bilinear')) + e2
-        d1 = self.dec1(F.interpolate(d2, scale_factor=2, mode='bilinear')) + e1
+        d2 = self.dec2(F.interpolate(mid, scale_factor=2, mode='bilinear', align_corners=False)) + self.skip2(e2)
+        d1 = self.dec1(F.interpolate(d2, scale_factor=2, mode='bilinear', align_corners=False)) + e1
         residual = self.out(d1)
         return torch.clamp(x + residual, 0.0, 1.0)
