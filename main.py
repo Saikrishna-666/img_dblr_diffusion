@@ -56,6 +56,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     # Directories
+    parser.add_argument('--mode', default='train', choices=['train', 'test'], type=str, help='Run training or evaluation pipeline')
     parser.add_argument('--model_name', default='MRDNet', choices=['MRDNet', 'MRDNetPlus'], type=str)
     parser.add_argument('--data_dir', type=str, default='/kaggle/input/go-pro/GOPRO')
     # Train
