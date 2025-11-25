@@ -25,8 +25,14 @@ def main(args):
         os.makedirs(args.result_dir)
 
     # Instantiate model or joint wrapper
-    if getattr(args, 'use_dbrs', False) and FullModel is not None and args.model_name == 'MRDNet':
-        model = FullModel(use_dbrs=True, use_dfd=getattr(args, 'use_dfd', False))
+    if getattr(args, 'use_dbrs', False) and FullModel is not None:
+        model = FullModel(
+            model_name=args.model_name,
+            use_dbrs=True,
+            use_dfd=getattr(args, 'use_dfd', False),
+            dbrs_depth=getattr(args, 'dbrs_depth', 48),
+            dbrs_steps=getattr(args, 'dbrs_steps', 4),
+        )
     else:
         # Allow optional DFD activation via command-line flag (MRDNet only)
         if getattr(args, 'use_dfd', False) and args.model_name == 'MRDNet':
@@ -68,10 +74,12 @@ if __name__ == '__main__':
     parser.add_argument('--train_proportion', type=float, default=1.0, help='Proportion of training data to use (0-1]')
     parser.add_argument('--use_dfd', action='store_true', help='Enable Dynamic Frequency Decomposition (DFD) modules')
     parser.add_argument('--use_dbrs', action='store_true', help='Enable Diffusion-Based Refinement Stage (joint training wrapper)')
+    parser.add_argument('--dbrs_depth', type=int, default=48, help='Base channel depth for DBRS refinement UNet')
+    parser.add_argument('--dbrs_steps', type=int, default=4, help='Sampling steps placeholder for future diffusion schedulers')
     parser.add_argument('--refine_loss_weight', type=float, default=0.5, help='Weight for refinement loss term when DBRS enabled')
     parser.add_argument('--freeze_mrd_epochs', type=int, default=0, help='Epochs to freeze MRDNet before joint fine-tune (0=disabled)')
     parser.add_argument('--mrd_lr_scale', type=float, default=0.2, help='LR scale applied to MRDNet params after unfreeze')
-    parser.add_argument('--freeze_scope', type=str, default='encoder', choices=['encoder','all','none'], help='Which MRDNet parts to freeze initially')
+    parser.add_argument('--freeze_scope', type=str, default='encoder', choices=['encoder','decoder','bottleneck','aff','all','none'], help='Which MRDNet parts to freeze initially')
     parser.add_argument('--accum_steps', type=int, default=1, help='Gradient accumulation steps')
     parser.add_argument('--checkpoint_dir', type=str, default='', help='Directory to save checkpoints; overrides default results/<model_name>/weights')
     parser.add_argument('--crop_size', type=int, default=256, help='Training crop size. Set 0 to disable cropping and use full images')

@@ -16,24 +16,42 @@ def _get_root(model):
     return model.module if hasattr(model, 'module') else model
 
 def _select_submodules_for_freeze(root, scope: str):
+    def _resolve_paths(paths):
+        found = []
+        for path in paths:
+            cur = root
+            ok = True
+            for part in path.split('.'):
+                if not hasattr(cur, part):
+                    ok = False
+                    break
+                cur = getattr(cur, part)
+            if ok and hasattr(cur, 'parameters'):
+                found.append(cur)
+        return found
+
     if scope == 'none':
         return []
     if scope == 'all':
         return [root]
-    names = ['mrd', 'mrd.Encoder', 'mrd.en_layer1', 'mrd.en_layer2', 'mrd.BA', 'mrd.AFFs', 'mrd.FAM1', 'mrd.FAM2', 'mrd.SCM1', 'mrd.SCM2']
-    modules = []
-    for n in names:
-        # support nested attribute paths
-        cur = root
-        ok = True
-        for part in n.split('.'):
-            if not hasattr(cur, part):
-                ok = False
-                break
-            cur = getattr(cur, part)
-        if ok and hasattr(cur, 'parameters'):
-            modules.append(cur)
-    # de-duplicate
+
+    presets = {
+        'encoder': ['mrd.Encoder', 'Encoder'],
+        'decoder': ['mrd.Decoder', 'Decoder'],
+        'bottleneck': ['mrd.BA', 'BA'],
+        'aff': ['mrd.AFFs', 'AFFs'],
+    }
+    if scope in presets:
+        modules = _resolve_paths(presets[scope])
+    else:
+        modules = _resolve_paths([scope])
+        if not modules:
+            # fallback to broader selection similar to legacy behaviour
+            modules = _resolve_paths([
+                'mrd', 'mrd.Encoder', 'mrd.en_layer1', 'mrd.en_layer2', 'mrd.BA',
+                'mrd.AFFs', 'mrd.FAM1', 'mrd.FAM2', 'mrd.SCM1', 'mrd.SCM2'
+            ])
+    # de-duplicate, preserve order
     return list(dict.fromkeys(modules))
 
 def freeze_parts(root, scope):
