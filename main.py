@@ -11,6 +11,19 @@ from train import _train
 from eval import _eval
 
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return True
+    value = str(v).strip().lower()
+    if value in ('yes', 'true', 't', '1', 'y'):
+        return True
+    if value in ('no', 'false', 'f', '0', 'n'):
+        return False
+    raise argparse.ArgumentTypeError(f'Boolean value expected, got: {v}')
+
+
 def main(args):
     # CUDNN
     cudnn.benchmark = True
@@ -84,11 +97,13 @@ if __name__ == '__main__':
     parser.add_argument('--accum_steps', type=int, default=1, help='Gradient accumulation steps')
     parser.add_argument('--checkpoint_dir', type=str, default='', help='Directory to save checkpoints; overrides default results/<model_name>/weights')
     parser.add_argument('--crop_size', type=int, default=256, help='Training crop size. Set 0 to disable cropping and use full images')
-    parser.add_argument('--use_amp', type=bool, default=True, help='Use mixed precision (AMP) to save memory')
+    parser.add_argument('--use_amp', type=str2bool, nargs='?', const=True, default=True,
+                        help='Use mixed precision (AMP). Accepts: true/false; also supports flag-only form')
 
     # Test
     parser.add_argument('--test_model', type=str, default='/kaggle/input/mrdnet-checkpoint/Pretrained Model/MRDNet.pkl')
-    parser.add_argument('--save_image', type=bool, default=True, choices=[True, False])
+    parser.add_argument('--save_image', type=str2bool, nargs='?', const=True, default=True,
+                        help='Whether to save images during evaluation')
     parser.add_argument('--save_limit', type=int, default=0, help='If > 0, save at most this many images during evaluation')
 
     args = parser.parse_args()
