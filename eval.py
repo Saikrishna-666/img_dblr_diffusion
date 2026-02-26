@@ -9,6 +9,22 @@ import time
 from tqdm import tqdm
 
 
+def _extract_pred(output):
+    """Normalize model outputs to a single prediction tensor.
+    Supports:
+      - MRDNet: [out1, out2, out3]
+      - FullModel: (mrd_outs, refined)
+      - Single tensor models
+    """
+    if isinstance(output, (list, tuple)):
+        # FullModel returns (mrd_outs, refined)
+        if len(output) == 2 and isinstance(output[0], (list, tuple)) and torch.is_tensor(output[1]):
+            return output[1]
+        # MRDNet style multi-scale outputs
+        return output[-1]
+    return output
+
+
 def _eval(model, args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     state = torch.load(args.test_model, map_location=device)
@@ -46,7 +62,7 @@ def _eval(model, args):
             input_img, label_img, _ = data
             input_img = input_img.to(device)
             tm = time.time()
-            _ = model(input_img)
+            _ = _extract_pred(model(input_img))
             _ = time.time() - tm
 
             if iter_idx == 20:
@@ -65,7 +81,7 @@ def _eval(model, args):
             # Enable autocast for eval to reduce memory
             use_amp = torch.cuda.is_available() and getattr(args, 'use_amp', True)
             with torch.amp.autocast('cuda', enabled=use_amp):
-                pred = model(input_img)[2]
+                pred = _extract_pred(model(input_img))
 
             elapsed = time.time() - tm
             adder(elapsed)
