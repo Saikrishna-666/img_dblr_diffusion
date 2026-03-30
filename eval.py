@@ -2,6 +2,7 @@ import os
 import torch
 from torchvision.transforms import functional as F
 import numpy as np
+from collections import defaultdict
 from utils import Adder
 from data import test_dataloader
 from skimage.metrics import peak_signal_noise_ratio
@@ -69,7 +70,7 @@ def _eval(model, args):
                 break
 
         # Main Evaluation
-        saved_count = 0
+        saved_count_by_folder = defaultdict(int)
         save_limit = getattr(args, 'save_limit', 0) or 0
         for iter_idx, data in enumerate(tqdm(dataloader, desc='Evaluate', leave=False)):
             input_img, label_img, name = data
@@ -91,7 +92,9 @@ def _eval(model, args):
             pred_numpy = pred_clip.squeeze(0).cpu().numpy()
             label_numpy = label_img.squeeze(0).cpu().numpy()
 
-            if args.save_image and (save_limit == 0 or saved_count < save_limit):
+            rel_path = name[0]
+            folder_key = os.path.dirname(rel_path)
+            if args.save_image and (save_limit == 0 or saved_count_by_folder[folder_key] < save_limit):
                 save_name = os.path.join(args.result_dir, name[0])
                 # Create subdirectories if name contains path segments (e.g., scene/filename.png)
                 save_dir = os.path.dirname(save_name)
@@ -100,7 +103,7 @@ def _eval(model, args):
                 pred_clip += 0.5 / 255
                 pred_img = F.to_pil_image(pred_clip.squeeze(0).cpu(), 'RGB')
                 pred_img.save(save_name)
-                saved_count += 1
+                saved_count_by_folder[folder_key] += 1
 
             psnr = peak_signal_noise_ratio(pred_numpy, label_numpy, data_range=1)
             psnr_adder(psnr)
