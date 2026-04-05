@@ -1,6 +1,12 @@
 import os
+import sys
 import torch
 from tqdm import tqdm
+
+# Prevent TensorBoard from importing full TensorFlow in environments where it's installed
+# (avoids duplicate cuDNN/cuBLAS/cuFFT factory registration warnings).
+os.environ.setdefault('TENSORBOARD_NO_TF', '1')
+os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
 
 from data import train_dataloader
 from utils import Adder, Timer, check_lr
@@ -209,7 +215,9 @@ def _train(model, args):
 
         epoch_timer.tic()
         iter_timer.tic()
-        progress = tqdm(dataloader, desc=f"Epoch {epoch_idx}", leave=False)
+        # In non-interactive notebook/script capture mode, tqdm can spam logs and trigger slow autosave.
+        show_bar = bool(sys.stderr.isatty() or sys.stdout.isatty())
+        progress = tqdm(dataloader, desc=f"Epoch {epoch_idx}", leave=False, disable=not show_bar, mininterval=1.0)
         # Gradient accumulation setup
         accum_steps = max(1, int(getattr(args, 'accum_steps', 1)))
         optimizer.zero_grad(set_to_none=True)
@@ -286,11 +294,12 @@ def _train(model, args):
 
             # Update tqdm status bar
             lr_groups = {g.get('name', i): g['lr'] for i, g in enumerate(optimizer.param_groups)}
-            progress.set_postfix({
-                'pix': f"{iter_pixel_adder.average():.4f}",
-                'fft': f"{iter_fft_adder.average():.4f}",
-                'lr_mrd': f"{lr_groups.get('mrd', 0):.1e}"
-            })
+            if show_bar:
+                progress.set_postfix({
+                    'pix': f"{iter_pixel_adder.average():.4f}",
+                    'fft': f"{iter_fft_adder.average():.4f}",
+                    'lr_mrd': f"{lr_groups.get('mrd', 0):.1e}"
+                })
 
             if (iter_idx + 1) % args.print_freq == 0:  # 每100次迭代保存一次临时的model，显示一次
                 lr = check_lr(optimizer)  # 检查lr

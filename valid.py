@@ -1,4 +1,5 @@
 import torch
+import sys
 from tqdm import tqdm
 from torchvision.transforms import functional as F
 from data import valid_dataloader
@@ -15,7 +16,8 @@ def _valid(model, args, ep):
 
     with torch.no_grad():
         print('Start GoPro Evaluation')  # 对原始数据集进行评估
-        for idx, data in enumerate(tqdm(gopro, desc='Validate', leave=False)):  # 枚举数据
+        show_bar = bool(sys.stderr.isatty() or sys.stdout.isatty())
+        for idx, data in enumerate(tqdm(gopro, desc='Validate', leave=False, disable=not show_bar, mininterval=1.0)):  # 枚举数据
             input_img, label_img = data
             input_img = input_img.to(device)
             os.makedirs(os.path.join(args.result_dir, '%d' % (ep)), exist_ok=True)

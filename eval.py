@@ -1,4 +1,5 @@
 import os
+import sys
 import torch
 from torchvision.transforms import functional as F
 import numpy as np
@@ -57,9 +58,10 @@ def _eval(model, args):
     model.eval()  # 前向推理之前使用，防止test的batch_size过小，很容易被BN层影响结果
     with torch.no_grad():
         psnr_adder = Adder()
+        show_bar = bool(sys.stderr.isatty() or sys.stdout.isatty())
 
         # Hardware warm-up
-        for iter_idx, data in enumerate(tqdm(dataloader, desc='Warm-up', leave=False)):
+        for iter_idx, data in enumerate(tqdm(dataloader, desc='Warm-up', leave=False, disable=not show_bar, mininterval=1.0)):
             input_img, label_img, _ = data
             input_img = input_img.to(device)
             tm = time.time()
@@ -72,7 +74,7 @@ def _eval(model, args):
         # Main Evaluation
         saved_count_by_folder = defaultdict(int)
         save_limit = getattr(args, 'save_limit', 0) or 0
-        for iter_idx, data in enumerate(tqdm(dataloader, desc='Evaluate', leave=False)):
+        for iter_idx, data in enumerate(tqdm(dataloader, desc='Evaluate', leave=False, disable=not show_bar, mininterval=1.0)):
             input_img, label_img, name = data
 
             input_img = input_img.to(device, non_blocking=True)
