@@ -33,8 +33,11 @@ def _valid(model, args, ep):
                 pred_img = pred
 
             pred_clip = torch.clamp(pred_img, 0, 1)  # 截取图像
-            p_numpy = pred_clip.squeeze(0).cpu().numpy()
-            label_numpy = label_img.squeeze(0).cpu().numpy()
+            # Move to CPU before converting to numpy to free GPU memory immediately
+            p_numpy = pred_clip.squeeze(0).detach().cpu().numpy()
+            label_numpy = label_img.squeeze(0).detach().cpu().numpy()
+            # Explicitly delete GPU tensors to free memory
+            del pred, pred_img, pred_clip
 
             psnr = peak_signal_noise_ratio(p_numpy, label_numpy, data_range=1)  # 计算PSNR
             psnr_adder(psnr)
@@ -43,4 +46,7 @@ def _valid(model, args, ep):
 
     print('\n')
     model.train()
+    # Clear GPU memory before returning to training
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return psnr_adder.average()  # 计算平均PSNR

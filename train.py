@@ -7,6 +7,9 @@ from tqdm import tqdm
 # (avoids duplicate cuDNN/cuBLAS/cuFFT factory registration warnings).
 os.environ.setdefault('TENSORBOARD_NO_TF', '1')
 os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
+# Suppress CUDA library warnings
+os.environ.setdefault('TF_CPP_MIN_VLOG_LEVEL', '3')
+os.environ.setdefault('NVIDIA_TF32_OVERRIDE', '1')
 
 from data import train_dataloader
 from utils import Adder, Timer, check_lr
@@ -203,6 +206,10 @@ def _train(model, args):
     epoch_timer = Timer('m')  # 周期时间
     iter_timer = Timer('m')  # 迭代时间
     best_psnr = -1
+    
+    # Clear GPU memory before starting training to prevent fragmentation
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     for epoch_idx in range(epoch, args.num_epoch + 1):
 
@@ -318,6 +325,8 @@ def _train(model, args):
                 'scheduler': scheduler.state_dict(),
                 'epoch': epoch_idx}, overwrite_name)
         print(f"[Checkpoint] Overwrite latest: {overwrite_name}")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         if epoch_idx % args.save_freq == 0:  # save_freq=100，每100个周期保存一次模型
             save_name = os.path.join(args.model_save_dir, 'model_%d.pkl' % epoch_idx)
@@ -326,6 +335,8 @@ def _train(model, args):
                         'scheduler': scheduler.state_dict(),
                         'epoch': epoch_idx}, save_name)
             print(f"[Checkpoint] Saved periodic: {save_name}")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         print("EPOCH: %02d\nElapsed time: %4.2f Epoch Pixel Loss: %7.4f Epoch FFT Loss: %7.4f" % (
             epoch_idx, epoch_timer.toc(), epoch_pixel_adder.average(), epoch_fft_adder.average()))
         epoch_fft_adder.reset()
@@ -337,10 +348,14 @@ def _train(model, args):
             print("epoch_idx==", epoch_idx)  # 已修改
             print('%03d epoch \n Average GOPRO PSNR %.2f dB' % (epoch_idx, val_gopro))  # 100个周期的平均峰值信噪比
             writer.add_scalar('PSNR_GOPRO', val_gopro, epoch_idx)  # 将所需的数据保存在文件里进行可视化，用来画图
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()  # Clear GPU memory after validation
             if val_gopro >= best_psnr:  # 平均的峰值信噪比大于-1,就可以保存模型
                 best_path = os.path.join(args.model_save_dir, 'Best.pkl')
                 torch.save({'model': model.state_dict()}, best_path)
                 print(f"[Checkpoint] Saved best: {best_path}")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
     save_name = os.path.join(args.model_save_dir, 'Final.pkl')
     torch.save({'model': model.state_dict()}, save_name)
     print(f"[Checkpoint] Saved final: {save_name}")
